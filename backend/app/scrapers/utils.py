@@ -16,13 +16,8 @@ FALLBACK_USER_AGENTS = [
 ]
 
 def get_random_user_agent() -> str:
-    """Returns a randomized user agent, leveraging fake-useragent or our high-quality fallbacks."""
-    try:
-        from fake_useragent import UserAgent
-        ua = UserAgent()
-        return ua.random
-    except Exception:
-        return random.choice(FALLBACK_USER_AGENTS)
+    """Returns a randomized user agent from our high-quality fallbacks."""
+    return random.choice(FALLBACK_USER_AGENTS)
 
 async def random_anti_block_delay(min_sec: float = 1.0, max_sec: float = 3.0):
     """Executes a polite, asynchronous randomized delay to prevent rate limit blocks."""

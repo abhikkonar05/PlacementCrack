@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 import asyncio
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
 from app.database import check_db_connection
@@ -36,6 +35,19 @@ async def run_all_scrapers_pipeline():
     except Exception as e:
         logger.error(f"Error during scheduled auto-refresh run: {e}")
 
+async def scraper_scheduler_loop():
+    """Polite background loop executing scraper pipeline every 12 hours."""
+    while True:
+        try:
+            await asyncio.sleep(12 * 3600)  # Wait for 12 hours
+            await run_all_scrapers_pipeline()
+        except asyncio.CancelledError:
+            logger.info("Scraper scheduler background loop cancelled.")
+            break
+        except Exception as e:
+            logger.error(f"Error in scheduler loop: {e}")
+            await asyncio.sleep(60)  # Wait a minute before retrying
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Check database connection
@@ -44,14 +56,13 @@ async def lifespan(app: FastAPI):
     # Launch scraper pipeline immediately in background to prevent FastAPI startup delay
     asyncio.create_task(run_all_scrapers_pipeline())
     
-    # Configure 12-hour background scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(run_all_scrapers_pipeline, 'interval', hours=12)
-    scheduler.start()
+    # Configure 12-hour background loop using native asyncio
+    scheduler_task = asyncio.create_task(scraper_scheduler_loop())
     
     yield
-    # Shutdown: Stop scheduled jobs cleanly
-    scheduler.shutdown()
+    # Shutdown: Stop scheduled task cleanly
+    scheduler_task.cancel()
+    await asyncio.gather(scheduler_task, return_exceptions=True)
 
 app = FastAPI(
     title="PlacementCrack Backend",
