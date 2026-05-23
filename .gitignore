@@ -1,0 +1,51 @@
+# Dependency directories
+node_modules/
+frontend/node_modules/
+
+# Python Virtual Environments
+venv/
+backend/venv/
+env/
+.venv/
+ENV/
+
+# Production build outputs
+dist/
+frontend/dist/
+dist-ssr/
+out/
+build/
+
+# Local configuration and environment variables
+.env
+.env*.local
+backend/.env
+frontend/.env
+*.local
+
+# Logs and diagnostics
+*.log
+backend/*.log
+frontend/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# IDEs, Editors, and OS-specific files
+.vscode/
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
