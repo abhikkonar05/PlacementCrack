@@ -4,7 +4,6 @@ import logging
 import random
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
-from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.database import SessionLocal
 from app.models import Opportunity
@@ -24,6 +23,7 @@ CURATED_OPPORTUNITIES = [
         "location": "Global / Remote",
         "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_Summer_of_Code_logo.svg/330px-Google_Summer_of_Code_logo.svg.png",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Devfolio Web3 Buildathon",
@@ -35,6 +35,7 @@ CURATED_OPPORTUNITIES = [
         "location": "Remote / Virtual",
         "logo": "https://devfolio.co/favicon.png",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "HackerEarth Hack-from-Home Challenge",
@@ -46,6 +47,7 @@ CURATED_OPPORTUNITIES = [
         "location": "Remote / Online",
         "logo": "https://hackerearth.com/favicon.ico",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "LeetCode Weekly Coding Contest",
@@ -57,6 +59,7 @@ CURATED_OPPORTUNITIES = [
         "location": "LeetCode Online",
         "logo": "https://leetcode.com/favicon.ico",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "React Frontend Developer Intern",
@@ -68,6 +71,7 @@ CURATED_OPPORTUNITIES = [
         "location": "Bengaluru (Hybrid)",
         "logo": "",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Outreachy Open-Source Internship",
@@ -79,19 +83,22 @@ CURATED_OPPORTUNITIES = [
         "location": "Remote / Global",
         "logo": "https://www.outreachy.org/static/images/logo.png",
         "is_active": True,
+        "scraped_at": datetime.now(timezone.utc)
     }
 ]
 
 async def prune_expired_opportunities():
     """Removes all opportunities that have expired based on their deadline dates."""
     try:
+        from sqlalchemy import delete
         now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         async with SessionLocal() as session:
             stmt = delete(Opportunity).where(Opportunity.deadline < now_date_str)
             result = await session.execute(stmt)
             await session.commit()
-            if result.rowcount > 0:
-                logger.info(f"Auto-Cleanup: Pruned {result.rowcount} expired opportunities from PostgreSQL.")
+            deleted_count = result.rowcount
+            if deleted_count > 0:
+                logger.info(f"Auto-Cleanup: Pruned {deleted_count} expired opportunities from PostgreSQL.")
     except Exception as e:
         logger.error(f"Auto-Cleanup failed: {e}")
 
@@ -151,6 +158,7 @@ async def scrape_opportunities() -> int:
                             "location": region,
                             "logo": "",
                             "is_active": True,
+                            "scraped_at": datetime.now(timezone.utc)
                         })
                         if len(scraped_opportunities) >= 10:
                             break
@@ -168,49 +176,49 @@ async def scrape_opportunities() -> int:
         # Merge static curated listings on top to ensure hackathons are always present
         scraped_opportunities = scraped_opportunities + CURATED_OPPORTUNITIES
         
-    # Save/Upsert to PostgreSQL using ON CONFLICT on unique `apply_link` column
+    # Save/Upsert to PostgreSQL
     async with SessionLocal() as session:
+        for opp in scraped_opportunities:
+            try:
+                # Validate links asynchronously in background to ensure zero broken paths!
+                is_valid = await verify_link(opp["apply_link"])
+                if not is_valid and not opp["apply_link"].startswith("https://weworkremotely.com"):
+                    logger.warning(f"Skipping link verification failure: {opp['apply_link']}")
+                    continue
+                    
+                stmt = pg_insert(Opportunity).values(
+                    title=opp["title"],
+                    company=opp["company"],
+                    opportunity_type=opp["opportunity_type"],
+                    eligibility=opp.get("eligibility"),
+                    deadline=opp.get("deadline"),
+                    apply_link=opp["apply_link"],
+                    location=opp.get("location"),
+                    logo=opp.get("logo"),
+                    is_active=opp.get("is_active", True)
+                ).on_conflict_do_update(
+                    index_elements=["apply_link"],
+                    set_={
+                        "title": opp["title"],
+                        "company": opp["company"],
+                        "opportunity_type": opp["opportunity_type"],
+                        "eligibility": opp.get("eligibility"),
+                        "deadline": opp.get("deadline"),
+                        "location": opp.get("location"),
+                        "logo": opp.get("logo"),
+                        "is_active": opp.get("is_active", True)
+                    }
+                )
+                await session.execute(stmt)
+                scraped_count += 1
+            except Exception as db_err:
+                logger.error(f"Failed to record student opportunity: {db_err}")
         try:
-            for opp in scraped_opportunities:
-                try:
-                    # Validate links asynchronously to ensure zero broken paths
-                    is_valid = await verify_link(opp["apply_link"])
-                    if not is_valid and not opp["apply_link"].startswith("https://weworkremotely.com"):
-                        logger.warning(f"Skipping link verification failure: {opp['apply_link']}")
-                        continue
-                        
-                    stmt = pg_insert(Opportunity).values(
-                        title=opp["title"],
-                        company=opp["company"],
-                        opportunity_type=opp["opportunity_type"],
-                        eligibility=opp.get("eligibility"),
-                        deadline=opp.get("deadline"),
-                        apply_link=opp["apply_link"],
-                        location=opp.get("location"),
-                        logo=opp.get("logo", ""),
-                        is_active=opp.get("is_active", True),
-                    ).on_conflict_do_update(
-                        index_elements=["apply_link"],
-                        set_={
-                            "title": opp["title"],
-                            "company": opp["company"],
-                            "opportunity_type": opp["opportunity_type"],
-                            "eligibility": opp.get("eligibility"),
-                            "deadline": opp.get("deadline"),
-                            "location": opp.get("location"),
-                            "logo": opp.get("logo", ""),
-                            "is_active": opp.get("is_active", True),
-                        }
-                    )
-                    await session.execute(stmt)
-                    scraped_count += 1
-                except Exception as db_err:
-                    logger.error(f"Failed to record student opportunity: {db_err}")
-            
             await session.commit()
         except Exception as commit_err:
             await session.rollback()
             logger.error(f"Failed to commit opportunities batch: {commit_err}")
+            scraped_count = 0
             
     # Trigger auto-cleanup of expired rows
     await prune_expired_opportunities()
