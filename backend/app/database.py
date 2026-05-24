@@ -1,13 +1,23 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.config import settings
 import logging
+import ssl
 from sqlalchemy import text
 
 logger = logging.getLogger("app.database")
 
+# Strip ?ssl=require from URL (asyncpg ignores it; we pass ssl via connect_args instead)
+_db_url = settings.DATABASE_URL.replace("?ssl=require", "").replace("&ssl=require", "")
+
+# Build SSL context for Supabase / any PostgreSQL requiring SSL
+_ssl_context = ssl.create_default_context()
+_ssl_context.check_hostname = False
+_ssl_context.verify_mode = ssl.CERT_NONE
+
 # Initialize async engine for PostgreSQL
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _db_url,
+    connect_args={"ssl": _ssl_context} if "supabase" in _db_url else {},
     pool_pre_ping=True,  # checks connection health before issuing queries
     echo=False          # set to True for SQL log debugging if needed
 )
