@@ -12,6 +12,8 @@ from app.routes.interview import router as interview_router
 from app.routes.ats import router as ats_router
 from app.routes.jobs import router as jobs_router
 from app.routes.scraped_content import router as scraped_content_router
+from app.routes.aptitude import router as aptitude_router
+from app.routes.dashboard import router as dashboard_router
 
 # Import scrapers to run on startup/intervals
 from app.scrapers.coding_scraper import scrape_coding_problems
@@ -92,6 +94,8 @@ app.include_router(interview_router, prefix="/api")
 app.include_router(ats_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(scraped_content_router, prefix="/api")
+app.include_router(aptitude_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
 
 @app.get("/")
 async def root():

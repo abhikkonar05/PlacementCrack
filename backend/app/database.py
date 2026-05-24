@@ -1,38 +1,43 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.config import settings
 import logging
+from sqlalchemy import text
 
 logger = logging.getLogger("app.database")
 
-# Initialize motor client
-client = AsyncIOMotorClient(settings.MONGODB_URI)
-# Extract database from connection string, or fallback to 'placementcrack'
-db = client.get_database("placementcrack")
+# Initialize async engine for PostgreSQL
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,  # checks connection health before issuing queries
+    echo=False          # set to True for SQL log debugging if needed
+)
 
-# Collections definition
-users_collection = db["users"]
-otps_collection = db["otps"]
-login_keys_collection = db["login_keys"]
-submissions_collection = db["submissions"]
-interviews_collection = db["interviews"]
-ats_checks_collection = db["ats_checks"]
-dsa_problems_collection = db["dsa_problems"]
-aptitude_questions_collection = db["aptitude_questions"]
-opportunities_collection = db["opportunities"]
-interview_questions_collection = db["interview_questions"]
+# Async session maker factory
+SessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+async def get_db():
+    """FastAPI Dependency for database sessions."""
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
 
 async def check_db_connection():
+    """Verify connectivity with Supabase PostgreSQL."""
     try:
-        # Ping database to verify connection
-        await client.admin.command('ping')
-        logger.info("Successfully connected to MongoDB.")
-        
-        # Ensure unique indexes on email
-        await users_collection.create_index("email", unique=True, sparse=True)
-        await otps_collection.create_index("email", unique=True, sparse=True)
-        await login_keys_collection.create_index("email", unique=True, sparse=True)
-        
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        logger.info("Successfully connected to Supabase PostgreSQL.")
         return True
     except Exception as e:
-        logger.error(f"MongoDB connection failed: {e}")
+        logger.error(f"PostgreSQL connection failed: {e}")
         return False

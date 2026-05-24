@@ -1,13 +1,15 @@
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 import random
 import time
-from bson import ObjectId
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 
 from app.config import settings
-from app.database import users_collection, otps_collection, login_keys_collection
+from app.database import get_db
+from app.models import User, OTP, LoginKey, RefreshToken, LoginActivity
 from app.schemas import (
     OTPSendRequest, 
     OTPVerifyRequest, 
@@ -17,8 +19,9 @@ from app.schemas import (
     Token, 
     TokenData
 )
-from app.auth.security import verify_password, get_password_hash, create_access_token
+from app.auth.security import verify_password, get_password_hash, create_access_token, create_refresh_token
 from app.auth.email_service import send_otp_email, send_login_key_email
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -39,8 +42,17 @@ def check_rate_limit(key: str, max_requests: int = 3, window_seconds: int = 60) 
     rate_limit_store[key] = timestamps
     return False
 
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post("/register")
-async def register(user: UserRegister, background_tasks: BackgroundTasks):
+async def register(
+    user: UserRegister, 
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
     try:
         if user.password != user.confirm_password:
             raise HTTPException(
@@ -49,51 +61,61 @@ async def register(user: UserRegister, background_tasks: BackgroundTasks):
             )
             
         # Check existing user by email
-        existing_user = await users_collection.find_one({"email": user.email})
+        stmt = select(User).where(User.email == user.email)
+        result = await db.execute(stmt)
+        existing_user = result.scalar_one_or_none()
+        
         if existing_user:
-            if existing_user.get("is_verified"):
+            if existing_user.is_verified:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="This email address is already registered."
                 )
             else:
                 # If existing user is unverified, remove so we can recreate it
-                await users_collection.delete_one({"email": user.email})
+                await db.delete(existing_user)
+                await db.commit()
         
-        # Save temporary unverified user in MongoDB
+        # Save temporary unverified user in PostgreSQL
         hashed_password = get_password_hash(user.password)
-        user_dict = {
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "name": f"{user.first_name} {user.last_name}",
-            "university": "Not Specified",
-            "email": user.email,
-            "phone": None,
-            "password_hash": hashed_password,
-            "is_verified": False,
-            "created_at": datetime.now(timezone.utc),
-            "profile_score": 0.0
-        }
-        
-        await users_collection.insert_one(user_dict)
+        new_user = User(
+            first_name=user.first_name,
+            last_name=user.last_name,
+            name=f"{user.first_name} {user.last_name}",
+            university="Not Specified",
+            email=user.email,
+            phone=None,
+            password_hash=hashed_password,
+            is_verified=False,
+            profile_score=0.0
+        )
+        db.add(new_user)
+        await db.flush() # Populate new_user.id
         
         # Generate 6-digit OTP
         otp_code = f"{random.randint(100000, 999999)}"
         expiry_time = datetime.now(timezone.utc) + timedelta(minutes=3)
         
-        # Save OTP to database
-        await otps_collection.update_one(
-            {"email": user.email},
-            {
-                "$set": {
-                    "otp": otp_code,
-                    "expires_at": expiry_time
-                }
-            },
-            upsert=True
-        )
+        # Upsert OTP record
+        otp_stmt = select(OTP).where(OTP.email == user.email)
+        otp_result = await db.execute(otp_stmt)
+        existing_otp = otp_result.scalar_one_or_none()
         
-        # Send Resend OTP in background
+        if existing_otp:
+            existing_otp.otp = otp_code
+            existing_otp.expires_at = expiry_time
+            db.add(existing_otp)
+        else:
+            new_otp = OTP(
+                email=user.email,
+                otp=otp_code,
+                expires_at=expiry_time
+            )
+            db.add(new_otp)
+            
+        await db.commit()
+        
+        # Send OTP in background
         background_tasks.add_task(send_otp_email, user.email, otp_code)
             
         return {
@@ -104,17 +126,25 @@ async def register(user: UserRegister, background_tasks: BackgroundTasks):
     except HTTPException as he:
         raise he
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Registration error: {str(e)}"
         )
 
+
 @router.post("/verify-otp")
-async def verify_otp(payload: OTPVerifyRequest):
+async def verify_otp(
+    payload: OTPVerifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     try:
         # Verify OTP
-        otp_doc = await otps_collection.find_one({"email": payload.email})
-        if not otp_doc or otp_doc.get("otp") != payload.otp:
+        otp_stmt = select(OTP).where(OTP.email == payload.email)
+        otp_result = await db.execute(otp_stmt)
+        otp_doc = otp_result.scalar_one_or_none()
+        
+        if not otp_doc or otp_doc.otp != payload.otp:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid verification code."
@@ -122,21 +152,29 @@ async def verify_otp(payload: OTPVerifyRequest):
             
         # Time validation
         now = datetime.now(timezone.utc)
-        expires_at = otp_doc.get("expires_at")
-        if expires_at and expires_at.replace(tzinfo=timezone.utc) < now:
+        if otp_doc.expires_at.replace(tzinfo=timezone.utc) < now:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="OTP has expired. Please request a new one."
             )
 
         # Mark user verified
-        await users_collection.update_one(
-            {"email": payload.email}, 
-            {"$set": {"is_verified": True}}
-        )
+        user_stmt = select(User).where(User.email == payload.email)
+        user_result = await db.execute(user_stmt)
+        user_doc = user_result.scalar_one_or_none()
+        
+        if not user_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User profile not found."
+            )
+            
+        user_doc.is_verified = True
+        db.add(user_doc)
         
         # Delete verified OTP record
-        await otps_collection.delete_one({"email": payload.email})
+        await db.delete(otp_doc)
+        await db.commit()
         
         return {
             "success": True,
@@ -145,15 +183,20 @@ async def verify_otp(payload: OTPVerifyRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"OTP Verification error: {str(e)}"
         )
 
+
 @router.post("/resend-otp")
-async def resend_otp(payload: OTPSendRequest, background_tasks: BackgroundTasks):
+async def resend_otp(
+    payload: OTPSendRequest, 
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        # Check Rate Limiter (max 3 OTPs per email per minute)
         if check_rate_limit(payload.email, max_requests=3, window_seconds=60):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -161,14 +204,17 @@ async def resend_otp(payload: OTPSendRequest, background_tasks: BackgroundTasks)
             )
 
         # Check if user exists
-        existing_user = await users_collection.find_one({"email": payload.email})
+        user_stmt = select(User).where(User.email == payload.email)
+        user_result = await db.execute(user_stmt)
+        existing_user = user_result.scalar_one_or_none()
+        
         if not existing_user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No registration request found for this email."
             )
             
-        if existing_user.get("is_verified"):
+        if existing_user.is_verified:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This email address is already verified."
@@ -179,16 +225,19 @@ async def resend_otp(payload: OTPSendRequest, background_tasks: BackgroundTasks)
         expiry_time = datetime.now(timezone.utc) + timedelta(minutes=3)
         
         # Update OTP in database
-        await otps_collection.update_one(
-            {"email": payload.email},
-            {
-                "$set": {
-                    "otp": otp_code,
-                    "expires_at": expiry_time
-                }
-            },
-            upsert=True
-        )
+        otp_stmt = select(OTP).where(OTP.email == payload.email)
+        otp_result = await db.execute(otp_stmt)
+        existing_otp = otp_result.scalar_one_or_none()
+        
+        if existing_otp:
+            existing_otp.otp = otp_code
+            existing_otp.expires_at = expiry_time
+            db.add(existing_otp)
+        else:
+            new_otp = OTP(email=payload.email, otp=otp_code, expires_at=expiry_time)
+            db.add(new_otp)
+            
+        await db.commit()
         
         # Resend OTP in background
         background_tasks.add_task(send_otp_email, payload.email, otp_code)
@@ -201,49 +250,74 @@ async def resend_otp(payload: OTPSendRequest, background_tasks: BackgroundTasks)
     except HTTPException as he:
         raise he
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Resend OTP error: {str(e)}"
         )
 
+
 @router.post("/login")
-async def login(credentials: UserLogin, background_tasks: BackgroundTasks):
+async def login(
+    credentials: UserLogin, 
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        user_doc = await users_collection.find_one({"email": credentials.email})
-        if not user_doc or not verify_password(credentials.password, user_doc.get("password_hash", "")):
+        user_stmt = select(User).where(User.email == credentials.email)
+        user_result = await db.execute(user_stmt)
+        user_doc = user_result.scalar_one_or_none()
+        
+        if not user_doc or not verify_password(credentials.password, user_doc.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email address or password.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
             
-        if not user_doc.get("is_verified", False):
+        if not user_doc.is_verified:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Your email is not verified yet. Please register again to verify."
             )
         
-        # STEP 1: If unique login key is NOT provided, generate and send it
+        now = datetime.now(timezone.utc)
+        
+        # STEP 1: Generate/Reuse and send verification login key
         if not credentials.login_key:
-            first_name = user_doc.get("first_name", "User")
-            first_char = first_name[0].upper() if first_name else "U"
-            random_digits = f"{random.randint(1000, 9999)}"
-            login_key = f"{first_char}{random_digits}"
+            # Check if there is an active valid login key
+            key_stmt = select(LoginKey).where(LoginKey.email == credentials.email)
+            key_result = await db.execute(key_stmt)
+            existing_key = key_result.scalar_one_or_none()
             
-            # Store login key temporarily (expires in 3 minutes)
-            expiry_time = datetime.now(timezone.utc) + timedelta(minutes=3)
-            await login_keys_collection.update_one(
-                {"email": credentials.email},
-                {
-                    "$set": {
-                        "login_key": login_key,
-                        "expires_at": expiry_time
-                    }
-                },
-                upsert=True
-            )
+            if existing_key and existing_key.expires_at.replace(tzinfo=timezone.utc) > now:
+                # Reuse the active key
+                login_key = existing_key.login_key
+            else:
+                # Generate new key
+                first_name = user_doc.first_name or "User"
+                first_char = first_name[0].upper() if first_name else "U"
+                random_digits = f"{random.randint(1000, 9999)}"
+                login_key = f"{first_char}{random_digits}"
+                expiry_time = now + timedelta(minutes=3)
+                
+                if existing_key:
+                    existing_key.login_key = login_key
+                    existing_key.expires_at = expiry_time
+                    db.add(existing_key)
+                else:
+                    new_key = LoginKey(
+                        email=credentials.email,
+                        login_key=login_key,
+                        expires_at=expiry_time
+                    )
+                    db.add(new_key)
+                    
+                await db.commit()
             
-            # Send login key via Resend
+            # Send login key via email
+            first_name = user_doc.first_name or "User"
             background_tasks.add_task(send_login_key_email, credentials.email, first_name, login_key)
             
             return {
@@ -253,66 +327,156 @@ async def login(credentials: UserLogin, background_tasks: BackgroundTasks):
             }
             
         # STEP 2: Verify login key
-        key_doc = await login_keys_collection.find_one({"email": credentials.email})
-        if not key_doc or key_doc.get("login_key") != credentials.login_key:
+        key_stmt = select(LoginKey).where(LoginKey.email == credentials.email)
+        key_result = await db.execute(key_stmt)
+        key_doc = key_result.scalar_one_or_none()
+        
+        if not key_doc or key_doc.login_key != credentials.login_key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid unique login key."
             )
             
         # Time validation for login key
-        now = datetime.now(timezone.utc)
-        expires_at = key_doc.get("expires_at")
-        if expires_at and expires_at.replace(tzinfo=timezone.utc) < now:
+        if key_doc.expires_at.replace(tzinfo=timezone.utc) < now:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Login key has expired. Please log in again."
             )
             
-        # Clean up login key after successful login
-        await login_keys_collection.delete_one({"email": credentials.email})
+        # Success! Log activity
+        client_host = request.client.host if request.client else "Unknown"
+        user_agent = request.headers.get("user-agent", "Unknown")
+        activity = LoginActivity(
+            user_id=user_doc.id,
+            login_time=now,
+            ip_address=client_host,
+            user_agent=user_agent
+        )
+        db.add(activity)
         
-        # Return JWT token
+        # Access and Refresh Tokens
+        access_token = create_access_token(data={"sub": credentials.email})
+        refresh_token = create_refresh_token(data={"sub": credentials.email})
+        
+        # Save refresh token in database
+        refresh_expires = now + timedelta(days=7)
+        new_refresh = RefreshToken(
+            user_id=user_doc.id,
+            token=refresh_token,
+            expires_at=refresh_expires
+        )
+        db.add(new_refresh)
+        
+        await db.commit()
+        
         user_resp = UserResponse(
-            id=str(user_doc["_id"]),
-            first_name=user_doc["first_name"],
-            last_name=user_doc["last_name"],
-            name=user_doc["name"],
-            email=user_doc["email"],
-            university=user_doc.get("university", "Not Specified"),
-            phone=user_doc.get("phone"),
+            id=str(user_doc.id),
+            first_name=user_doc.first_name,
+            last_name=user_doc.last_name,
+            name=user_doc.name,
+            email=user_doc.email,
+            university=user_doc.university,
+            phone=user_doc.phone,
             is_verified=True,
-            created_at=user_doc["created_at"],
-            profile_score=user_doc.get("profile_score", 0.0)
+            created_at=user_doc.created_at,
+            profile_score=user_doc.profile_score or 0.0
         )
         
-        access_token = create_access_token(data={"sub": credentials.email})
         return {
             "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "user": user_resp
         }
     except HTTPException as he:
         raise he
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Login error: {str(e)}"
         )
 
+
+@router.post("/refresh")
+async def refresh_session(
+    payload: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Regenerates a new access token using a valid refresh token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate refresh token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        token_payload = jwt.decode(payload.refresh_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        email: str = token_payload.get("sub")
+        token_type: str = token_payload.get("type")
+        
+        if email is None or token_type != "refresh":
+            raise credentials_exception
+            
+        # Verify in database
+        stmt = select(RefreshToken).where(RefreshToken.token == payload.refresh_token)
+        result = await db.execute(stmt)
+        token_doc = result.scalar_one_or_none()
+        
+        if not token_doc:
+            raise credentials_exception
+            
+        now = datetime.now(timezone.utc)
+        if token_doc.expires_at.replace(tzinfo=timezone.utc) < now:
+            # Token expired, prune it
+            await db.delete(token_doc)
+            await db.commit()
+            raise credentials_exception
+            
+        # Generate new access token
+        access_token = create_access_token(data={"sub": email})
+        return {
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    except JWTError:
+        raise credentials_exception
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Refresh session error: {str(e)}"
+        )
+
+
 @router.post("/logout")
-async def logout(token: str = Depends(oauth2_scheme)):
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db)
+):
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         email: str = payload.get("sub")
         if email:
-            # Clear active login keys for this user
-            await login_keys_collection.delete_one({"email": email})
+            # Delete active login keys and refresh tokens for this user
+            user_stmt = select(User).where(User.email == email)
+            user_result = await db.execute(user_stmt)
+            user_doc = user_result.scalar_one_or_none()
+            
+            if user_doc:
+                # Delete active refresh tokens
+                await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_doc.id))
+                # Delete active login keys
+                await db.execute(delete(LoginKey).where(LoginKey.email == email))
+                await db.commit()
         return {"success": True, "message": "Logged out successfully."}
     except Exception:
         return {"success": True, "message": "Logged out successfully."}
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db)
+) -> UserResponse:
     """Dependency to retrieve the currently logged in user based on email session."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -331,26 +495,30 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
         raise credentials_exception
         
     try:
-        user_doc = await users_collection.find_one({"email": token_data.email})
-        if user_doc is None or not user_doc.get("is_verified", False):
+        user_stmt = select(User).where(User.email == token_data.email)
+        user_result = await db.execute(user_stmt)
+        user_doc = user_result.scalar_one_or_none()
+        
+        if user_doc is None or not user_doc.is_verified:
             raise credentials_exception
             
         return UserResponse(
-            id=str(user_doc["_id"]),
-            first_name=user_doc["first_name"],
-            last_name=user_doc["last_name"],
-            name=user_doc["name"],
-            email=user_doc["email"],
-            university=user_doc.get("university", "Not Specified"),
-            phone=user_doc.get("phone"),
+            id=str(user_doc.id),
+            first_name=user_doc.first_name,
+            last_name=user_doc.last_name,
+            name=user_doc.name,
+            email=user_doc.email,
+            university=user_doc.university,
+            phone=user_doc.phone,
             is_verified=True,
-            created_at=user_doc["created_at"],
-            profile_score=user_doc.get("profile_score", 0.0)
+            created_at=user_doc.created_at,
+            profile_score=user_doc.profile_score or 0.0
         )
     except HTTPException as he:
         raise he
     except Exception:
         raise credentials_exception
+
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: UserResponse = Depends(get_current_user)):

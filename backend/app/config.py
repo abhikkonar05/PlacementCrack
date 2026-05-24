@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
-    MONGODB_URI: str = "mongodb://localhost:27017/placementcrack"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/placementcrack"
     JWT_SECRET_KEY: str = "supersecretjwtkeyplacementcrack2026version"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440

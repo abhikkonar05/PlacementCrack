@@ -539,51 +539,9 @@ const AuthPage: React.FC = () => {
         )}
       </div>
 
-      <style>{`
-        .input-label {
-          display: block;
-          font-size: 0.8rem;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: var(--text-secondary);
-          margin-bottom: 8px;
-        }
-        .input-wrapper {
-          position: relative;
-          display: flex;
-          align-items: center;
-          border: 1px solid var(--border-light);
-          border-radius: 12px;
-          background-color: var(--bg-input);
-          transition: all 0.2s ease;
-        }
-        .input-wrapper:focus-within {
-          border-color: var(--accent-violet);
-          box-shadow: 0 0 10px rgba(139, 92, 246, 0.2);
-        }
-        .input-icon {
-          position: absolute;
-          left: 14px;
-          color: var(--text-muted);
-        }
-        .input-wrapper input {
-          width: 100%;
-          background: transparent;
-          border: none;
-          color: var(--text-primary);
-          padding: 14px 14px 14px 44px;
-          font-size: 0.95rem;
-          outline: none;
-          font-family: var(--font-body);
-        }
-        .input-wrapper input:disabled {
-          color: var(--text-muted);
-          cursor: not-allowed;
-        }
-      `}</style>
-    </div>
+      </div>
   );
 };
 
 export default AuthPage;
+

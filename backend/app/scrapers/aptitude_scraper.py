@@ -4,11 +4,12 @@ import logging
 import random
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-from app.database import db
+from sqlalchemy import select
+from app.database import SessionLocal
+from app.models import AptitudeQuestion
 from app.scrapers.utils import get_random_user_agent, random_anti_block_delay
 
 logger = logging.getLogger("app.scrapers.aptitude_scraper")
-aptitude_questions_collection = db["aptitude_questions"]
 
 # Rich curated fallback aptitude question bank to satisfy Quantitative, Logical, and Verbal preparation tracks
 CURATED_APTITUDE_QUESTIONS = [
@@ -20,7 +21,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "Speed = 60 km/hr = 60 * (5/18) m/sec = 50/3 m/sec.\nLength of the train = (Speed * Time) = (50/3 * 9) = 150 metres.",
         "category": "Quantitative",
         "difficulty": "Beginner",
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "question": "The average of 20 numbers is zero. Of them, at the most, how many may be greater than zero?",
@@ -29,7 +29,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "Average of 20 numbers = 0.\nTherefore, Sum of 20 numbers = (0 * 20) = 0.\nAt the most, 19 of these numbers may be positive (greater than 0) and their sum could be balanced out by a single strongly negative 20th number to result in a sum of 0.",
         "category": "Quantitative",
         "difficulty": "Intermediate",
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "question": "A, B and C can do a piece of work in 20, 30 and 60 days respectively. In how many days can A do the work if he is assisted by B and C on every third day?",
@@ -38,7 +37,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "A's 2 days work = 2 * (1/20) = 1/10.\n(A+B+C)'s 1 day work on the 3rd day = (1/20 + 1/30 + 1/60) = 6/60 = 1/10.\nWork done in 3 days = (1/10 + 1/10) = 1/5.\nTo complete the whole work (5/5), time taken = 3 * 5 = 15 days.",
         "category": "Quantitative",
         "difficulty": "Advanced",
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Logical Reasoning
     {
@@ -48,7 +46,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "The first letters follow alphabetical order: S, T, U, V, W.\nThe second letters follow order: C, E, G, I, K (skipping one letter each time).\nThe third letters follow order: D, F, H, J, L (skipping one letter each time).\nCombining these gives: V, I, J.",
         "category": "Logical",
         "difficulty": "Beginner",
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "question": "Point A is 5m West of B. Point C is 10m South of B. Point D is 5m East of C. In which direction is A with respect to D?",
@@ -57,7 +54,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "Point A is West of B. Point C is directly South of B. Point D is East of C.\nThis forms a rectangular system. D is 5m East of C, which means it lies directly South of B. \nTherefore, Point A (West of B) is in the North-West direction relative to D.",
         "category": "Logical",
         "difficulty": "Intermediate",
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Verbal Ability
     {
@@ -67,7 +63,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "'Obstinate' means refusing to change one's behavior or ideas; stubborn. Hence, 'Stubborn' is the correct synonym.",
         "category": "Verbal",
         "difficulty": "Beginner",
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "question": "Complete the sentence: 'The director was so impressed by the candidate's ______ that he hired him immediately.'",
@@ -76,7 +71,6 @@ CURATED_APTITUDE_QUESTIONS = [
         "explanation": "'Eloquence' means fluent or persuasive speaking or writing, which is a positive attribute that would impress a director and lead to an immediate hire. Other options represent negative attributes.",
         "category": "Verbal",
         "difficulty": "Intermediate",
-        "scraped_at": datetime.now(timezone.utc)
     }
 ]
 
@@ -111,7 +105,6 @@ async def scrape_aptitude_questions() -> int:
                             "explanation": item.get("explanation", "Please refer to standard reasoning rules to verify."),
                             "category": "Logical",
                             "difficulty": random.choice(["Beginner", "Intermediate", "Advanced"]),
-                            "scraped_at": datetime.now(timezone.utc)
                         })
         
         await random_anti_block_delay(0.5, 1.5)
@@ -124,18 +117,46 @@ async def scrape_aptitude_questions() -> int:
         logger.info("Using curated aptitude fallback dataset.")
         scraped_questions = CURATED_APTITUDE_QUESTIONS
         
-    # Save/Upsert to MongoDB
-    for q in scraped_questions:
+    # Save/Upsert to PostgreSQL (select-then-update/insert since question column has no unique constraint)
+    async with SessionLocal() as session:
         try:
-            # Upsert based on question content uniqueness to prevent duplicate content
-            await aptitude_questions_collection.update_one(
-                {"question": q["question"]},
-                {"$set": q},
-                upsert=True
-            )
-            scraped_count += 1
-        except Exception as db_err:
-            logger.error(f"Failed to record aptitude question: {db_err}")
+            for q in scraped_questions:
+                try:
+                    # Check if question already exists
+                    existing_stmt = select(AptitudeQuestion).where(
+                        AptitudeQuestion.question == q["question"]
+                    )
+                    existing_result = await session.execute(existing_stmt)
+                    existing_row = existing_result.scalar_one_or_none()
+                    
+                    if existing_row:
+                        # Update existing record
+                        existing_row.options = q["options"]
+                        existing_row.answer = q["answer"]
+                        existing_row.explanation = q.get("explanation")
+                        existing_row.category = q["category"]
+                        existing_row.difficulty = q["difficulty"]
+                        session.add(existing_row)
+                    else:
+                        # Insert new record
+                        new_question = AptitudeQuestion(
+                            question=q["question"],
+                            options=q["options"],
+                            answer=q["answer"],
+                            explanation=q.get("explanation"),
+                            category=q["category"],
+                            difficulty=q["difficulty"],
+                        )
+                        session.add(new_question)
+                    
+                    scraped_count += 1
+                except Exception as db_err:
+                    logger.error(f"Failed to record aptitude question: {db_err}")
             
-    logger.info(f"Recorded {scraped_count} unique aptitude questions in MongoDB.")
+            await session.commit()
+        except Exception as commit_err:
+            await session.rollback()
+            logger.error(f"Failed to commit aptitude questions batch: {commit_err}")
+            
+    logger.info(f"Recorded {scraped_count} unique aptitude questions in PostgreSQL.")
     return scraped_count

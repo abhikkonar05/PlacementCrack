@@ -2,11 +2,12 @@ import asyncio
 import httpx
 import logging
 from datetime import datetime, timezone
-from app.database import db
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from app.database import SessionLocal
+from app.models import Roadmap
 from app.scrapers.utils import get_random_user_agent, random_anti_block_delay
 
 logger = logging.getLogger("app.scrapers.roadmap_scraper")
-roadmaps_collection = db["roadmaps"]
 
 # Extremely detailed, premium pre-curated career roadmaps for PlacementCrack preparation tracks
 CURATED_ROADMAPS = [
@@ -22,7 +23,6 @@ CURATED_ROADMAPS = [
             {"phase": "Phase 6: Advanced Frontend Styles", "topics": ["CSS-in-JS (Styled Components)", "Tailwind CSS", "CSS Modules", "Framer Motion Animations"]},
             {"phase": "Phase 7: Testing & Deploying", "topics": ["Jest & React Testing Library unit checks", "Vercel / Netlify / Firebase deployment", "Web Vitals & Performance Optimization"]}
         ],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "role": "Backend Developer",
@@ -36,7 +36,6 @@ CURATED_ROADMAPS = [
             {"phase": "Phase 6: Testing & Security", "topics": ["Unit testing (pytest, Jest)", "Security scanning", "Password hashing (Bcrypt, Argon2)"]},
             {"phase": "Phase 7: CI/CD & Cloud Deployments", "topics": ["Docker Containerization", "GitHub Actions CI/CD pipeline", "Deploying to Render, AWS, or GCP"]}
         ],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "role": "DevOps Engineer",
@@ -50,7 +49,6 @@ CURATED_ROADMAPS = [
             {"phase": "Phase 6: Container Orchestration", "topics": ["Kubernetes (Pods, Deployments, Services)", "Helm Charts packaging", "Minikube local clusters"]},
             {"phase": "Phase 7: Monitoring & Logging", "topics": ["Prometheus metrics collection", "Grafana dashboards monitoring", "ELK Stack (Elasticsearch, Logstash, Kibana)"]}
         ],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "role": "Data Scientist",
@@ -64,7 +62,6 @@ CURATED_ROADMAPS = [
             {"phase": "Phase 6: Data Visualization & BI", "topics": ["Tableau / PowerBI dashboards", "Plotly / Streamlit quick interactive apps"]},
             {"phase": "Phase 7: Model MLOps Deployment", "topics": ["MLflow experiment tracking", "FastAPI ML model wrappers", "Docker containerization & cloud hosting"]}
         ],
-        "scraped_at": datetime.now(timezone.utc)
     }
 ]
 
@@ -105,7 +102,6 @@ async def scrape_roadmaps() -> int:
                         "role": "Frontend Developer (Live)",
                         "description": "Aggregated live frontend developer checklist from dev roadmap files.",
                         "steps": phases,
-                        "scraped_at": datetime.now(timezone.utc)
                     })
         
         await random_anti_block_delay(0.5, 1.5)
@@ -118,17 +114,31 @@ async def scrape_roadmaps() -> int:
         logger.info("Using curated career path roadmaps fallback dataset.")
         scraped_data = CURATED_ROADMAPS
         
-    # Save/Upsert to MongoDB
-    for roadmap in scraped_data:
+    # Save/Upsert to PostgreSQL using ON CONFLICT on unique `role` column
+    async with SessionLocal() as session:
         try:
-            await roadmaps_collection.update_one(
-                {"role": roadmap["role"]},
-                {"$set": roadmap},
-                upsert=True
-            )
-            scraped_count += 1
-        except Exception as db_err:
-            logger.error(f"Failed to record roadmap path: {db_err}")
+            for roadmap in scraped_data:
+                try:
+                    stmt = pg_insert(Roadmap).values(
+                        role=roadmap["role"],
+                        description=roadmap.get("description"),
+                        steps=roadmap["steps"],
+                    ).on_conflict_do_update(
+                        index_elements=["role"],
+                        set_={
+                            "description": roadmap.get("description"),
+                            "steps": roadmap["steps"],
+                        }
+                    )
+                    await session.execute(stmt)
+                    scraped_count += 1
+                except Exception as db_err:
+                    logger.error(f"Failed to record roadmap path: {db_err}")
             
-    logger.info(f"Recorded {scraped_count} career path roadmaps in MongoDB.")
+            await session.commit()
+        except Exception as commit_err:
+            await session.rollback()
+            logger.error(f"Failed to commit roadmaps batch: {commit_err}")
+            
+    logger.info(f"Recorded {scraped_count} career path roadmaps in PostgreSQL.")
     return scraped_count

@@ -4,11 +4,12 @@ import logging
 import random
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-from app.database import db
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from app.database import SessionLocal
+from app.models import DSAProblem
 from app.scrapers.utils import get_random_user_agent, random_anti_block_delay
 
 logger = logging.getLogger("app.scrapers.coding_scraper")
-dsa_problems_collection = db["dsa_problems"]
 
 # High-quality fallback curated DSA Sheet dataset for flawless offline functionality
 CURATED_DSA_PROBLEMS = [
@@ -21,7 +22,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/two-sum/",
         "tags": ["Array", "Hash Table"],
         "company_tags": ["Google", "Amazon", "Apple", "Adobe"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Find the Duplicate Number",
@@ -31,7 +31,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/find-the-duplicate-number/",
         "tags": ["Array", "Two Pointers", "Binary Search"],
         "company_tags": ["Amazon", "Microsoft", "Google"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Trapping Rain Water",
@@ -41,7 +40,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/trapping-rain-water/",
         "tags": ["Array", "Two Pointers", "Stack"],
         "company_tags": ["Google", "Microsoft", "Goldman Sachs", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Strings
     {
@@ -52,7 +50,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/valid-anagram/",
         "tags": ["String", "Hash Table", "Sorting"],
         "company_tags": ["Uber", "Amazon", "Bloomberg"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Longest Substring Without Repeating Characters",
@@ -62,7 +59,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/longest-substring-without-repeating-characters/",
         "tags": ["String", "Sliding Window", "Hash Table"],
         "company_tags": ["Microsoft", "Google", "Facebook", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Linked Lists
     {
@@ -73,7 +69,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/reverse-linked-list/",
         "tags": ["Linked List", "Recursion"],
         "company_tags": ["Adobe", "Microsoft", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Detect Cycle in a Linked List",
@@ -83,7 +78,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/linked-list-cycle/",
         "tags": ["Linked List", "Two Pointers"],
         "company_tags": ["Microsoft", "Amazon", "Goldman Sachs"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Trees
     {
@@ -94,7 +88,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/maximum-depth-of-binary-tree/",
         "tags": ["Tree", "Binary Tree", "DFS"],
         "company_tags": ["Google", "Spotify", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Binary Tree Level Order Traversal",
@@ -104,7 +97,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/binary-tree-level-order-traversal/",
         "tags": ["Tree", "BFS", "Binary Tree"],
         "company_tags": ["Facebook", "LinkedIn", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Serialize and Deserialize Binary Tree",
@@ -114,7 +106,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/serialize-and-deserialize-binary-tree/",
         "tags": ["Tree", "Design", "BFS", "DFS"],
         "company_tags": ["Google", "Microsoft", "Amazon", "Uber"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     # Dynamic Programming
     {
@@ -125,7 +116,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/climbing-stairs/",
         "tags": ["Dynamic Programming", "Math", "Memoization"],
         "company_tags": ["Apple", "Uber", "Adobe"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Coin Change",
@@ -135,7 +125,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/coin-change/",
         "tags": ["Dynamic Programming", "BFS"],
         "company_tags": ["Amazon", "Google", "ByteDance", "Goldman Sachs"],
-        "scraped_at": datetime.now(timezone.utc)
     },
     {
         "title": "Edit Distance",
@@ -145,7 +134,6 @@ CURATED_DSA_PROBLEMS = [
         "link": "https://leetcode.com/problems/edit-distance/",
         "tags": ["Dynamic Programming", "String"],
         "company_tags": ["Google", "Microsoft", "Amazon"],
-        "scraped_at": datetime.now(timezone.utc)
     }
 ]
 
@@ -196,7 +184,7 @@ async def scrape_coding_problems() -> int:
                                 platform = "LeetCode" if "leetcode.com" in link else "GeeksforGeeks"
                                 difficulty = random.choice(["Beginner", "Intermediate", "Advanced"])
                                 
-                                problem_doc = {
+                                scraped_problems.append({
                                     "title": title,
                                     "difficulty": difficulty,
                                     "topic": current_topic,
@@ -204,9 +192,7 @@ async def scrape_coding_problems() -> int:
                                     "link": link,
                                     "tags": [current_topic],
                                     "company_tags": random.sample(["Google", "Amazon", "Microsoft", "Adobe", "Meta"], random.randint(1, 3)),
-                                    "scraped_at": datetime.now(timezone.utc)
-                                }
-                                scraped_problems.append(problem_doc)
+                                })
                                 if len(scraped_problems) >= 30: # Limit scraping density
                                     break
         
@@ -221,18 +207,39 @@ async def scrape_coding_problems() -> int:
         logger.info("Using curated DSA Sheet fallback dataset.")
         scraped_problems = CURATED_DSA_PROBLEMS
         
-    # Save/Upsert to MongoDB
-    for prob in scraped_problems:
+    # Save/Upsert to PostgreSQL using ON CONFLICT on unique `link` column
+    async with SessionLocal() as session:
         try:
-            # Upsert based on link to prevent duplicate content
-            await dsa_problems_collection.update_one(
-                {"link": prob["link"]},
-                {"$set": prob},
-                upsert=True
-            )
-            scraped_count += 1
-        except Exception as db_err:
-            logger.error(f"Failed to record coding problem: {db_err}")
+            for prob in scraped_problems:
+                try:
+                    stmt = pg_insert(DSAProblem).values(
+                        title=prob["title"],
+                        difficulty=prob["difficulty"],
+                        topic=prob["topic"],
+                        platform=prob["platform"],
+                        link=prob["link"],
+                        tags=prob.get("tags"),
+                        company_tags=prob.get("company_tags"),
+                    ).on_conflict_do_update(
+                        index_elements=["link"],
+                        set_={
+                            "title": prob["title"],
+                            "difficulty": prob["difficulty"],
+                            "topic": prob["topic"],
+                            "platform": prob["platform"],
+                            "tags": prob.get("tags"),
+                            "company_tags": prob.get("company_tags"),
+                        }
+                    )
+                    await session.execute(stmt)
+                    scraped_count += 1
+                except Exception as db_err:
+                    logger.error(f"Failed to record coding problem: {db_err}")
             
-    logger.info(f"Recorded {scraped_count} unique programming challenges in MongoDB.")
+            await session.commit()
+        except Exception as commit_err:
+            await session.rollback()
+            logger.error(f"Failed to commit coding problems batch: {commit_err}")
+            
+    logger.info(f"Recorded {scraped_count} unique programming challenges in PostgreSQL.")
     return scraped_count
