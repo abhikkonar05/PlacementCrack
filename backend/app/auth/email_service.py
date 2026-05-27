@@ -148,13 +148,13 @@ OTP_HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-# Premium HTML Template for Unique Login Key (MFA)
+# Premium HTML Template for Permanent Student Key
 LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your Secure Login Key</title>
+  <title>Your Permanent Student Key</title>
   <style>
     body {{
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -173,7 +173,7 @@ LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
       border: 1px solid #334155;
     }}
     .header {{
-      background: linear-gradient(135deg, #10b981 0%, #6366f1 100%);
+      background: linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%);
       padding: 40px 20px;
       text-align: center;
     }}
@@ -183,7 +183,7 @@ LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
       font-size: 30px;
       font-weight: 800;
       letter-spacing: -0.025em;
-      text-shadow: 0 2px 10px rgba(16, 185, 129, 0.3);
+      text-shadow: 0 2px 10px rgba(139, 92, 246, 0.3);
     }}
     .header p {{
       color: rgba(255, 255, 255, 0.95);
@@ -207,28 +207,28 @@ LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
       margin-bottom: 30px;
     }}
     .key-container {{
-      background-color: #064e3b;
-      border: 2px dashed #34d399;
+      background-color: #1e1b4b;
+      border: 2px dashed #818cf8;
       border-radius: 12px;
       padding: 24px;
       text-align: center;
       margin-bottom: 30px;
-      box-shadow: 0 4px 15px rgba(16, 185, 129, 0.1);
+      box-shadow: 0 4px 15px rgba(129, 140, 248, 0.1);
     }}
     .login-key {{
       font-family: 'Courier New', Courier, monospace;
-      font-size: 44px;
+      font-size: 36px;
       font-weight: 800;
-      color: #a7f3d0;
-      letter-spacing: 4px;
+      color: #c7d2fe;
+      letter-spacing: 2px;
       margin: 0;
-      text-shadow: 0 0 10px rgba(167, 243, 208, 0.3);
+      text-shadow: 0 0 10px rgba(199, 210, 254, 0.3);
     }}
     .key-label {{
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.15em;
-      color: #34d399;
+      color: #818cf8;
       margin-top: 8px;
       font-weight: 600;
     }}
@@ -270,28 +270,28 @@ LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
   <div class="container">
     <div class="header">
-      <h1>PlacementCrack Secure Entry</h1>
-      <p>Multi-Factor Authentication Shield</p>
+      <h1>PlacementCrack Student Portal</h1>
+      <p>Your Permanent Access Credential</p>
     </div>
     <div class="content">
       <div class="greeting">Hello {first_name},</div>
       <div class="message">
-        A login attempt was initiated for your PlacementCrack account. To complete the login process, please use the following unique, single-use login key:
+        Thank you for completing email verification! We are excited to support you on your career preparation journey. Below is your permanent, unique **Student Key**. Keep this key safe and private, as you can use it to log in directly to PlacementCrack in the future without entering your password!
       </div>
       <div class="key-container">
-        <div class="login-key">{login_key}</div>
-        <div class="key-label">Unique Login Key</div>
+        <div class="login-key">{student_key}</div>
+        <div class="key-label">Permanent Student Key</div>
       </div>
       <div class="details-box">
-        <div class="detail-item"><span class="detail-label">Attempt Time:</span> {login_time}</div>
-        <div class="detail-item"><span class="detail-label">Status:</span> Pending MFA Verification</div>
+        <div class="detail-item"><span class="detail-label">Generation Time:</span> {created_time}</div>
+        <div class="detail-item"><span class="detail-label">Status:</span> Permanently Active</div>
       </div>
-      <div class="message" style="margin-bottom: 0; color: #ef4444; font-weight: 500; font-size: 13px;">
-        [Security Note] If you did not initiate this login request, please change your password immediately and secure your account.
+      <div class="message" style="margin-bottom: 0; color: #818cf8; font-weight: 500; font-size: 13px;">
+        [Security Note] Please keep this key secure. It provides direct, password-less entry to your private student dashboard.
       </div>
     </div>
     <div class="footer">
-      <div class="branding">PlacementCrack Security Shield</div>
+      <div class="branding">PlacementCrack Support Team</div>
       <p>&copy; 2026 PlacementCrack. All rights reserved.</p>
     </div>
   </div>
@@ -299,16 +299,18 @@ LOGIN_KEY_HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+
 def print_resend_dev_simulator(to_email: str, subject: str, code: str, mode: str):
     """Outputs a beautifully formatted terminal fallback for local Resend API testing."""
-    mode_text = "EMAIL OTP CODE" if mode == "otp" else "MFA UNIQUE LOGIN KEY"
+    mode_text = "EMAIL OTP CODE" if mode == "otp" else "PERMANENT STUDENT KEY"
     print("\n" + "="*80)
     print(f" [DEV] RESEND API SIMULATOR - {mode_text}")
     print("="*80)
     print(f"  Recipient Email: {to_email}")
     print(f"  Subject Line   : {subject}")
-    print(f"  Access Code    : {code}  (Expires in 3 minutes)")
+    print(f"  Access Code    : {code}  (Keep it secure)")
     print("="*80 + "\n")
+
 
 async def send_resend_email(to_email: str, subject: str, html_content: str) -> bool:
     """Helper method to send an email using the Resend REST API asynchronously."""
@@ -325,14 +327,14 @@ async def send_resend_email(to_email: str, subject: str, html_content: str) -> b
     from_address = settings.FROM_EMAIL
     if "@" in from_address and "<" not in from_address:
         from_address = f"PlacementCrack <{from_address}>"
-
+ 
     payload = {
         "from": from_address,
         "to": [to_email],
         "subject": subject,
         "html": html_content
     }
-
+ 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json=payload, headers=headers)
@@ -346,11 +348,12 @@ async def send_resend_email(to_email: str, subject: str, html_content: str) -> b
         logger.error(f"Resend HTTP request failed: {e}")
         return False
 
+
 async def send_otp_email(to_email: str, otp: str) -> bool:
     """Async method to dispatch a beautifully formatted OTP Verification Email."""
     subject = f"{otp} is your PlacementCrack verification code"
     html_content = OTP_HTML_TEMPLATE.format(otp=otp)
-
+ 
     # Attempt Resend call
     success = await send_resend_email(to_email, subject, html_content)
     
@@ -361,18 +364,19 @@ async def send_otp_email(to_email: str, otp: str) -> bool:
         
     return success
 
-async def send_login_key_email(to_email: str, first_name: str, login_key: str) -> bool:
-    """Async method to dispatch a beautifully formatted secure MFA Login Key Email."""
-    subject = f"Secure login key {login_key} for PlacementCrack"
-    login_time = datetime.now().strftime("%B %d, %Y, %I:%M %p")
-    html_content = LOGIN_KEY_HTML_TEMPLATE.format(first_name=first_name, login_key=login_key, login_time=login_time)
 
+async def send_login_key_email(to_email: str, first_name: str, student_key: str) -> bool:
+    """Async method to dispatch a beautifully formatted permanent secure Student Key Email."""
+    subject = "Your Permanent Student Key for PlacementCrack"
+    created_time = datetime.now().strftime("%B %d, %Y, %I:%M %p")
+    html_content = LOGIN_KEY_HTML_TEMPLATE.format(first_name=first_name, student_key=student_key, created_time=created_time)
+ 
     # Attempt Resend call
     success = await send_resend_email(to_email, subject, html_content)
     
     # Dev mode terminal simulator fallback
     if not success or not settings.RESEND_API_KEY:
-        print_resend_dev_simulator(to_email, subject, login_key, "login_key")
+        print_resend_dev_simulator(to_email, subject, student_key, "student_key")
         return True
         
     return success

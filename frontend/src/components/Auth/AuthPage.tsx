@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Mail, Lock, User, ShieldCheck, ArrowRight, Activity, Timer } from 'lucide-react';
+import { Mail, Lock, User, ShieldCheck, ArrowRight, Timer } from 'lucide-react';
 
 const AuthPage: React.FC = () => {
   const { login, apiUrl } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
+  const [loginMode, setLoginMode] = useState<'password' | 'key'>('password');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -23,8 +24,17 @@ const AuthPage: React.FC = () => {
   const [isResendDisabled, setIsResendDisabled] = useState(true);
 
   // MFA Login Key States
-  const [showLoginKeyField, setShowLoginKeyField] = useState(false);
   const [loginKey, setLoginKey] = useState('');
+
+  // Safe helper to extract validation errors to prevent blank screen React rendering crash
+  const getErrorMessage = (data: any, fallback: string): string => {
+    if (!data || !data.detail) return fallback;
+    if (typeof data.detail === 'string') return data.detail;
+    if (Array.isArray(data.detail)) {
+      return data.detail.map((err: any) => err.msg || '').filter(Boolean).join(', ') || fallback;
+    }
+    return fallback;
+  };
 
   // Countdown timer effect for OTP resend
   useEffect(() => {
@@ -74,7 +84,7 @@ const AuthPage: React.FC = () => {
         setIsResendDisabled(true);
         setSuccessMsg('Account request created! Check email for the 6-digit OTP code.');
       } else {
-        setError(data.detail || 'Failed to register. Email may be already registered.');
+        setError(getErrorMessage(data, 'Failed to register. Email may be already registered.'));
       }
     } catch (e) {
       setError('Connection to backend failed. Make sure FastAPI backend is running.');
@@ -109,10 +119,10 @@ const AuthPage: React.FC = () => {
           setOtpCode('');
           setPassword('');
           setConfirmPassword('');
-          setSuccessMsg('Verification successful. Please sign in now!');
+          setSuccessMsg('Verification successful. Please check your email for your permanent Student Key and sign in below!');
         }, 1500);
       } else {
-        setError(data.detail || 'Invalid or expired OTP code.');
+        setError(getErrorMessage(data, 'Invalid or expired OTP code.'));
       }
     } catch (e) {
       setError('Verification request failed.');
@@ -137,7 +147,7 @@ const AuthPage: React.FC = () => {
       if (res.ok) {
         setSuccessMsg('A new verification code has been dispatched to your email.');
       } else {
-        setError(data.detail || 'Failed to resend OTP.');
+        setError(getErrorMessage(data, 'Failed to resend OTP.'));
         setIsResendDisabled(false);
         setResendTimer(0);
       }
@@ -150,9 +160,21 @@ const AuthPage: React.FC = () => {
 
   const handleInitiateLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
-      setError('Please enter both email and password.');
-      return;
+    
+    const payload: any = {};
+    if (loginMode === 'password') {
+      if (!email || !password) {
+        setError('Please enter your email and password.');
+        return;
+      }
+      payload.email = email.trim();
+      payload.password = password;
+    } else {
+      if (!loginKey) {
+        setError('Please enter your permanent Student Key.');
+        return;
+      }
+      payload.student_key = loginKey.trim().toUpperCase();
     }
 
     setLoading(true);
@@ -163,50 +185,17 @@ const AuthPage: React.FC = () => {
       const res = await fetch(`${apiUrl}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      const data = await res.json();
-      
-      if (res.ok) {
-        if (data.key_sent) {
-          setShowLoginKeyField(true);
-          setSuccessMsg('Step 1 Complete! A secure Login Key was sent to your email.');
-        }
-      } else {
-        setError(data.detail || 'Invalid email address or password.');
-      }
-    } catch (e) {
-      setError('Backend connection failed. Is the server running?');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifyLoginKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginKey) {
-      setError('Please enter your unique login key.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      const res = await fetch(`${apiUrl}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, login_key: loginKey })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       
       if (res.ok) {
         login(data.access_token, data.user);
       } else {
-        setError(data.detail || 'Invalid or expired secure login key.');
+        setError(getErrorMessage(data, 'Invalid credentials. Please try again.'));
       }
     } catch (e) {
-      setError('Network request failed during MFA verification.');
+      setError('Backend connection failed. Is the server running?');
     } finally {
       setLoading(false);
     }
@@ -246,14 +235,63 @@ const AuthPage: React.FC = () => {
             P
           </div>
           <h2 className="glow-text" style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '6px' }}>
-            {isLogin ? (showLoginKeyField ? 'MFA Verification' : 'Welcome Back') : (showOtpField ? 'Email Verification' : 'Get Placement Ready')}
+            {isLogin ? 'Welcome Back' : (showOtpField ? 'Email Verification' : 'Get Placement Ready')}
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
             {isLogin 
-              ? (showLoginKeyField ? 'Confirm the secure key sent to your inbox' : 'Enter details to access your dashboard') 
+              ? (loginMode === 'password' ? 'Enter details to access your dashboard' : 'Use your permanent secure Student Key') 
               : (showOtpField ? `Enter the 6-digit OTP code sent to ${email}` : 'Create a secure account to begin mock tests')}
           </p>
         </div>
+
+        {/* Toggle Login Option Tabs */}
+        {isLogin && (
+          <div style={{
+            display: 'flex',
+            backgroundColor: 'rgba(30, 41, 59, 0.5)',
+            border: '1px solid var(--border-glow)',
+            borderRadius: '10px',
+            padding: '4px',
+            marginBottom: '24px'
+          }}>
+            <button
+              type="button"
+              onClick={() => { setLoginMode('password'); setError(''); setSuccessMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '8px',
+                border: 'none',
+                background: loginMode === 'password' ? 'var(--accent-purple)' : 'none',
+                color: loginMode === 'password' ? 'white' : 'var(--text-secondary)',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              Sign In with Password
+            </button>
+            <button
+              type="button"
+              onClick={() => { setLoginMode('key'); setError(''); setSuccessMsg(''); }}
+              style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '8px',
+                border: 'none',
+                background: loginMode === 'key' ? 'var(--accent-purple)' : 'none',
+                color: loginMode === 'key' ? 'white' : 'var(--text-secondary)',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              Sign In with Student Key
+            </button>
+          </div>
+        )}
 
         {error && (
           <div style={{
@@ -284,11 +322,10 @@ const AuthPage: React.FC = () => {
           </div>
         )}
 
-
         {/* Form elements */}
         <form onSubmit={
           isLogin 
-            ? (showLoginKeyField ? handleVerifyLoginKey : handleInitiateLogin)
+            ? handleInitiateLogin
             : (showOtpField ? handleVerifyOtp : handleSendOtp)
         }>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -330,8 +367,8 @@ const AuthPage: React.FC = () => {
               </>
             )}
 
-            {/* EMAIL (Only visible if not verifying OTP/Key or if logging in initially) */}
-            {((!showOtpField && !showLoginKeyField) || isLogin) && (
+            {/* EMAIL (Visible if registering or logging in with password) */}
+            {((!isLogin && !showOtpField) || (isLogin && loginMode === 'password')) && (
               <div>
                 <label className="input-label">Email Address</label>
                 <div className="input-wrapper">
@@ -342,14 +379,13 @@ const AuthPage: React.FC = () => {
                     value={email} 
                     onChange={e => setEmail(e.target.value)} 
                     required 
-                    disabled={showLoginKeyField}
                   />
                 </div>
               </div>
             )}
 
-            {/* PASSWORD (Only visible if not verifying OTP/Key) */}
-            {!showOtpField && !showLoginKeyField && (
+            {/* PASSWORD (Visible if registering or logging in with password) */}
+            {((isLogin && loginMode === 'password') || (!isLogin && !showOtpField)) && (
               <div>
                 <label className="input-label">Password</label>
                 <div className="input-wrapper">
@@ -427,44 +463,24 @@ const AuthPage: React.FC = () => {
               </>
             )}
 
-            {/* LOGIN KEY MFA VERIFICATION VIEW */}
-            {isLogin && showLoginKeyField && (
-              <>
-                <div>
-                  <label className="input-label" style={{ color: '#10b981' }}>Enter Secure Login Key</label>
-                  <div className="input-wrapper" style={{ borderColor: '#10b981' }}>
-                    <ShieldCheck size={18} className="input-icon" style={{ color: '#10b981' }} />
-                    <input 
-                      type="text" 
-                      placeholder="Format: X1234" 
-                      value={loginKey} 
-                      onChange={e => setLoginKey(e.target.value.toUpperCase())} 
-                      maxLength={5}
-                      required 
-                    />
-                  </div>
+            {/* STUDENT KEY VIEW (Only visible when logging in with Student Key) */}
+            {isLogin && loginMode === 'key' && (
+              <div>
+                <label className="input-label" style={{ color: 'var(--accent-purple)' }}>Secure Student Key</label>
+                <div className="input-wrapper">
+                  <ShieldCheck size={18} className="input-icon" style={{ color: 'var(--accent-purple)' }} />
+                  <input 
+                    type="text" 
+                    placeholder="e.g. STU-A1B2C3D4E5" 
+                    value={loginKey} 
+                    onChange={e => setLoginKey(e.target.value)} 
+                    required 
+                  />
                 </div>
-                <div style={{ textAlign: 'right', marginTop: '-4px' }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowLoginKeyField(false);
-                      setLoginKey('');
-                      setSuccessMsg('');
-                    }}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--text-secondary)',
-                      cursor: 'pointer',
-                      fontSize: '0.78rem',
-                      textDecoration: 'underline'
-                    }}
-                  >
-                    Back to password login
-                  </button>
-                </div>
-              </>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '6px', lineHeight: '1.4' }}>
+                  * Your permanent Student Key was sent to your email after completing OTP verification during registration.
+                </p>
+              </div>
             )}
 
             {/* SUBMIT BUTTON */}
@@ -484,17 +500,10 @@ const AuthPage: React.FC = () => {
               {loading ? (
                 <span>Processing...</span>
               ) : isLogin ? (
-                showLoginKeyField ? (
-                  <>
-                    <span>Verify & Sign In</span>
-                    <ArrowRight size={18} />
-                  </>
-                ) : (
-                  <>
-                    <span>Request Login Key</span>
-                    <Activity size={18} />
-                  </>
-                )
+                <>
+                  <span>Sign In</span>
+                  <ArrowRight size={18} />
+                </>
               ) : showOtpField ? (
                 <>
                   <span>Verify Email</span>
@@ -511,7 +520,7 @@ const AuthPage: React.FC = () => {
         </form>
 
         {/* SWITCH TABS (Login / Register Toggle) */}
-        {(!showOtpField && !showLoginKeyField) && (
+        {!showOtpField && (
           <div style={{ textAlign: 'center', marginTop: '24px' }}>
             <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
               {isLogin ? "Don't have an account? " : "Already have an account? "}
@@ -538,8 +547,7 @@ const AuthPage: React.FC = () => {
           </div>
         )}
       </div>
-
-      </div>
+    </div>
   );
 };
 

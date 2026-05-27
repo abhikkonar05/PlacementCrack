@@ -21,9 +21,9 @@ class UserRegister(BaseModel):
     confirm_password: str = Field(..., min_length=6)
 
 class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-    login_key: str
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    student_key: Optional[str] = None
 
 class UserResponse(BaseModel):
     id: str

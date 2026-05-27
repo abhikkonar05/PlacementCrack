@@ -41,10 +41,11 @@ class User(Base):
     aptitude_sessions = relationship("AptitudeSession", back_populates="user", cascade="all, delete-orphan")
     login_activities = relationship("LoginActivity", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    student_key = relationship("StudentKey", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class OTP(Base):
-    __tablename__ = "otps"
+    __tablename__ = "otp_verifications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, index=True, nullable=False)
@@ -53,14 +54,15 @@ class OTP(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class LoginKey(Base):
-    __tablename__ = "login_keys"
+class StudentKey(Base):
+    __tablename__ = "student_keys"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    login_key = Column(String(10), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    student_key = Column(String(50), unique=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="student_key")
 
 
 class RefreshToken(Base):

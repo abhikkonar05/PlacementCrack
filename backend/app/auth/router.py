@@ -9,7 +9,7 @@ from sqlalchemy import select, delete
 
 from app.config import settings
 from app.database import get_db
-from app.models import User, OTP, LoginKey, RefreshToken, LoginActivity
+from app.models import User, OTP, StudentKey, RefreshToken, LoginActivity
 from app.schemas import (
     OTPSendRequest, 
     OTPVerifyRequest, 
@@ -171,26 +171,48 @@ async def verify_otp(
             )
             
         user_doc.is_verified = True
-        
-        # Generate permanent login_key
-        first_name = user_doc.first_name or "User"
-        first_char = first_name[0].upper() if first_name else "U"
-        random_digits = f"{random.randint(1000, 9999)}"
-        login_key = f"{first_char}{random_digits}"
-        
-        user_doc.login_key = login_key
         db.add(user_doc)
+        
+        # Check if student key already exists for this user
+        key_stmt = select(StudentKey).where(StudentKey.user_id == user_doc.id)
+        key_result = await db.execute(key_stmt)
+        existing_key = key_result.scalar_one_or_none()
+        
+        if existing_key:
+            student_key = existing_key.student_key
+        else:
+            # Generate permanent unique secure Student Key
+            # Format: STU- followed by random uppercase alphanumeric of length 10
+            chars = "ABCDEFGHJKLMNOPQRSTUVWXYZ23456789"
+            random_str = "".join(random.choice(chars) for _ in range(10))
+            student_key = f"STU-{random_str}"
+            
+            # Prevent duplicate student keys
+            while True:
+                dup_stmt = select(StudentKey).where(StudentKey.student_key == student_key)
+                dup_result = await db.execute(dup_stmt)
+                if not dup_result.scalar_one_or_none():
+                    break
+                random_str = "".join(random.choice(chars) for _ in range(10))
+                student_key = f"STU-{random_str}"
+            
+            new_key = StudentKey(
+                user_id=user_doc.id,
+                student_key=student_key
+            )
+            db.add(new_key)
         
         # Delete verified OTP record
         await db.delete(otp_doc)
         await db.commit()
         
-        # Send login key via email
-        background_tasks.add_task(send_login_key_email, user_doc.email, first_name, login_key)
+        # Send Student Key via email
+        first_name = user_doc.first_name or "User"
+        background_tasks.add_task(send_login_key_email, user_doc.email, first_name, student_key)
         
         return {
             "success": True,
-            "message": "Email verified successfully. Your login key has been sent to your email."
+            "message": "Email verified successfully. Your permanent Student Key has been sent to your email."
         }
     except HTTPException as he:
         raise he
@@ -276,15 +298,47 @@ async def login(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        user_stmt = select(User).where(User.email == credentials.email)
-        user_result = await db.execute(user_stmt)
-        user_doc = user_result.scalar_one_or_none()
+        user_doc = None
         
-        if not user_doc or not verify_password(credentials.password, user_doc.password_hash):
+        # Check Option 2: Student Key
+        if credentials.student_key:
+            key_stmt = select(StudentKey).where(StudentKey.student_key == credentials.student_key.strip())
+            key_result = await db.execute(key_stmt)
+            key_doc = key_result.scalar_one_or_none()
+            
+            if not key_doc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Student Key.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                
+            user_stmt = select(User).where(User.id == key_doc.user_id)
+            user_result = await db.execute(user_stmt)
+            user_doc = user_result.scalar_one_or_none()
+            
+            if not user_doc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User associated with this Student Key does not exist."
+                )
+        
+        # Check Option 1: Email + Password
+        elif credentials.email and credentials.password:
+            user_stmt = select(User).where(User.email == credentials.email.strip())
+            user_result = await db.execute(user_stmt)
+            user_doc = user_result.scalar_one_or_none()
+            
+            if not user_doc or not verify_password(credentials.password, user_doc.password_hash):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect email address or password.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        else:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email address or password.",
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please provide either your Email and Password OR your secure Student Key."
             )
             
         if not user_doc.is_verified:
@@ -295,13 +349,6 @@ async def login(
         
         now = datetime.now(timezone.utc)
         
-        # Verify permanent login key
-        if not user_doc.login_key or credentials.login_key != user_doc.login_key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid login key."
-            )
-            
         # Success! Log activity
         client_host = request.client.host if request.client else "Unknown"
         user_agent = request.headers.get("user-agent", "Unknown")
@@ -313,9 +360,9 @@ async def login(
         )
         db.add(activity)
         
-        # Access and Refresh Tokens
-        access_token = create_access_token(data={"sub": credentials.email})
-        refresh_token = create_refresh_token(data={"sub": credentials.email})
+        # Access and Refresh Tokens (subject uses email address for backward compatibility)
+        access_token = create_access_token(data={"sub": user_doc.email})
+        refresh_token = create_refresh_token(data={"sub": user_doc.email})
         
         # Save refresh token in database
         refresh_expires = now + timedelta(days=7)
@@ -423,8 +470,6 @@ async def logout(
             if user_doc:
                 # Delete active refresh tokens
                 await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_doc.id))
-                # Delete active login keys
-                await db.execute(delete(LoginKey).where(LoginKey.email == email))
                 await db.commit()
         return {"success": True, "message": "Logged out successfully."}
     except Exception:
