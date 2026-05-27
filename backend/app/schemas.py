@@ -23,7 +23,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
-    login_key: Optional[str] = None
+    login_key: str
 
 class UserResponse(BaseModel):
     id: str

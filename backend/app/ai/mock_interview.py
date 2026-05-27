@@ -31,16 +31,21 @@ QUESTIONS = {
     ]
 }
 
-# Setup Gemini safely
-has_gemini = False
-if settings.GEMINI_API_KEY:
+# Setup Grok safely
+has_grok = False
+grok_client = None
+if settings.GROK_API_KEY:
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        has_gemini = True
-        logger.info("Gemini API initialized successfully for mock interviews.")
+        # pyrefly: ignore [missing-import]
+        from openai import AsyncOpenAI
+        grok_client = AsyncOpenAI(
+            api_key=settings.GROK_API_KEY,
+            base_url="https://api.x.ai/v1"
+        )
+        has_grok = True
+        logger.info("Grok API initialized successfully for mock interviews.")
     except Exception as e:
-        logger.error(f"Failed to configure Gemini API: {e}")
+        logger.error(f"Failed to configure Grok API: {e}")
 
 def get_fallback_interview_questions(role: str) -> List[str]:
     """Retrieves standard interview questions based on the target role."""
@@ -61,8 +66,8 @@ async def get_interview_questions(role: str) -> List[str]:
         return hf_questions
     return get_fallback_interview_questions(role)
 
-async def generate_feedback_gemini(role: str, question: str, answer: str) -> Tuple[float, str]:
-    """Generates grading score and text feedback using Gemini API."""
+async def generate_feedback_grok(role: str, question: str, answer: str) -> Tuple[float, str]:
+    """Generates grading score and text feedback using Grok API."""
     hf_result = await evaluate_answer_with_huggingface(role, question, answer)
     if hf_result:
         feedback = hf_result["feedback"]
@@ -70,11 +75,10 @@ async def generate_feedback_gemini(role: str, question: str, answer: str) -> Tup
             feedback += "\n\nActionable Improvement: " + hf_result["improvement_tips"]
         return hf_result["score"], feedback
 
-    if not has_gemini:
+    if not has_grok or not grok_client:
         return evaluate_locally(question, answer)
         
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = f"""
         You are an expert technical interviewer hiring for a {role} position.
         Evaluate the candidate's response to the following question.
@@ -91,22 +95,22 @@ async def generate_feedback_gemini(role: str, question: str, answer: str) -> Tup
         """
         
         # Call model
-        response = await model.generate_content_async(prompt)
-        text = response.text.strip()
-        
-        # Clean formatting (Gemini sometimes includes markdown json flags)
-        if text.startswith("```json"):
-            text = text.replace("```json", "", 1)
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+        response = await grok_client.chat.completions.create(
+            model="grok-beta",
+            messages=[
+                {"role": "system", "content": "You are a helpful AI JSON output generator."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        text = response.choices[0].message.content.strip()
         
         data = json.loads(text)
         score = float(data.get("score", 70.0))
         feedback = data.get("feedback", "") + "\n\n**Actionable Improvement:** " + data.get("improvement_tips", "")
         return score, feedback
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {e}")
+        logger.error(f"Error calling Grok API: {e}")
         return evaluate_locally(question, answer)
 
 def evaluate_locally(question: str, answer: str) -> Tuple[float, str]:
@@ -159,7 +163,7 @@ async def evaluate_full_interview(role: str, questions: List[str], answers: List
     total_score = 0.0
     
     for i, (q, a) in enumerate(zip(questions, answers)):
-        score, feedback = await generate_feedback_gemini(role, q, a)
+        score, feedback = await generate_feedback_grok(role, q, a)
         detailed_evaluations.append({
             "question_number": i + 1,
             "question": q,

@@ -136,6 +136,7 @@ async def register(
 @router.post("/verify-otp")
 async def verify_otp(
     payload: OTPVerifyRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -170,15 +171,26 @@ async def verify_otp(
             )
             
         user_doc.is_verified = True
+        
+        # Generate permanent login_key
+        first_name = user_doc.first_name or "User"
+        first_char = first_name[0].upper() if first_name else "U"
+        random_digits = f"{random.randint(1000, 9999)}"
+        login_key = f"{first_char}{random_digits}"
+        
+        user_doc.login_key = login_key
         db.add(user_doc)
         
         # Delete verified OTP record
         await db.delete(otp_doc)
         await db.commit()
         
+        # Send login key via email
+        background_tasks.add_task(send_login_key_email, user_doc.email, first_name, login_key)
+        
         return {
             "success": True,
-            "message": "Email verified successfully. You can now login."
+            "message": "Email verified successfully. Your login key has been sent to your email."
         }
     except HTTPException as he:
         raise he
@@ -260,7 +272,6 @@ async def resend_otp(
 @router.post("/login")
 async def login(
     credentials: UserLogin, 
-    background_tasks: BackgroundTasks,
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
@@ -284,64 +295,11 @@ async def login(
         
         now = datetime.now(timezone.utc)
         
-        # STEP 1: Generate/Reuse and send verification login key
-        if not credentials.login_key:
-            # Check if there is an active valid login key
-            key_stmt = select(LoginKey).where(LoginKey.email == credentials.email)
-            key_result = await db.execute(key_stmt)
-            existing_key = key_result.scalar_one_or_none()
-            
-            if existing_key and existing_key.expires_at.replace(tzinfo=timezone.utc) > now:
-                # Reuse the active key
-                login_key = existing_key.login_key
-            else:
-                # Generate new key
-                first_name = user_doc.first_name or "User"
-                first_char = first_name[0].upper() if first_name else "U"
-                random_digits = f"{random.randint(1000, 9999)}"
-                login_key = f"{first_char}{random_digits}"
-                expiry_time = now + timedelta(minutes=3)
-                
-                if existing_key:
-                    existing_key.login_key = login_key
-                    existing_key.expires_at = expiry_time
-                    db.add(existing_key)
-                else:
-                    new_key = LoginKey(
-                        email=credentials.email,
-                        login_key=login_key,
-                        expires_at=expiry_time
-                    )
-                    db.add(new_key)
-                    
-                await db.commit()
-            
-            # Send login key via email
-            first_name = user_doc.first_name or "User"
-            background_tasks.add_task(send_login_key_email, credentials.email, first_name, login_key)
-            
-            return {
-                "key_sent": True,
-                "email": credentials.email,
-                "login_key": login_key if settings.DEVELOPER_MODE else None
-            }
-            
-        # STEP 2: Verify login key
-        key_stmt = select(LoginKey).where(LoginKey.email == credentials.email)
-        key_result = await db.execute(key_stmt)
-        key_doc = key_result.scalar_one_or_none()
-        
-        if not key_doc or key_doc.login_key != credentials.login_key:
+        # Verify permanent login key
+        if not user_doc.login_key or credentials.login_key != user_doc.login_key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid unique login key."
-            )
-            
-        # Time validation for login key
-        if key_doc.expires_at.replace(tzinfo=timezone.utc) < now:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Login key has expired. Please log in again."
+                detail="Invalid login key."
             )
             
         # Success! Log activity
