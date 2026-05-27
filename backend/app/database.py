@@ -14,10 +14,16 @@ _ssl_context = ssl.create_default_context()
 _ssl_context.check_hostname = False
 _ssl_context.verify_mode = ssl.CERT_NONE
 
+_connect_args = {
+    "statement_cache_size": 0
+}
+if "supabase" in _db_url or "pooler" in _db_url:
+    _connect_args["ssl"] = _ssl_context
+
 # Initialize async engine for PostgreSQL
 engine = create_async_engine(
     _db_url,
-    connect_args={"ssl": _ssl_context} if "supabase" in _db_url else {},
+    connect_args=_connect_args,
     pool_pre_ping=True,  # checks connection health before issuing queries
     echo=False          # set to True for SQL log debugging if needed
 )

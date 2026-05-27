@@ -49,12 +49,14 @@ async def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     import ssl
     _db_url = settings.DATABASE_URL.replace("?ssl=require", "").replace("&ssl=require", "")
-    _connect_args = {}
-    if "supabase" in _db_url:
+    _connect_args = {
+        "statement_cache_size": 0
+    }
+    if "supabase" in _db_url or "pooler" in _db_url:
         _ssl_ctx = ssl.create_default_context()
         _ssl_ctx.check_hostname = False
         _ssl_ctx.verify_mode = ssl.CERT_NONE
-        _connect_args = {"ssl": _ssl_ctx}
+        _connect_args["ssl"] = _ssl_ctx
     connectable = create_async_engine(
         _db_url,
         poolclass=pool.NullPool,
