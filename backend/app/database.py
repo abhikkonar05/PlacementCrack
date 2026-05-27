@@ -6,8 +6,8 @@ from sqlalchemy import text
 
 logger = logging.getLogger("app.database")
 
-# Strip ?ssl=require from URL (asyncpg ignores it; we pass ssl via connect_args instead)
-_db_url = settings.DATABASE_URL.replace("?ssl=require", "").replace("&ssl=require", "")
+# Strip leading/trailing whitespaces and ?ssl=require from URL
+_db_url = settings.DATABASE_URL.strip().replace("?ssl=require", "").replace("&ssl=require", "")
 
 # Build SSL context for Supabase / any PostgreSQL requiring SSL
 _ssl_context = ssl.create_default_context()
